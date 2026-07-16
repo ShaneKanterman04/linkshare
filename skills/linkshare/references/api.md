@@ -20,6 +20,12 @@ Optional configuration keys:
 
 ## Endpoints
 
+### Discover available endpoints
+
+`GET /api/v1`
+
+Returns the service name, API version, and every supported application endpoint with its HTTP method, path, and short description. Agents should use this route to inspect capabilities without scraping the web guide.
+
 ### Create a link
 
 `POST /api/v1/links`

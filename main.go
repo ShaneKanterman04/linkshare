@@ -69,6 +69,22 @@ type apiError struct {
 	} `json:"error"`
 }
 
+type endpointDescription struct {
+	Method      string `json:"method"`
+	Path        string `json:"path"`
+	Description string `json:"description"`
+}
+
+var publicEndpoints = []endpointDescription{
+	{Method: http.MethodGet, Path: "/api/v1", Description: "List available Linkshare endpoints."},
+	{Method: http.MethodGet, Path: "/api/v1/links", Description: "List and filter links in an inbox."},
+	{Method: http.MethodPost, Path: "/api/v1/links", Description: "Create a link for the owner or agents."},
+	{Method: http.MethodPatch, Path: "/api/v1/links/{id}", Description: "Mark a link read or unread, archive it, or restore it."},
+	{Method: http.MethodGet, Path: "/healthz", Description: "Check service and database health."},
+	{Method: http.MethodGet, Path: "/", Description: "Open the Linkshare web interface."},
+	{Method: http.MethodGet, Path: "/guide", Description: "Open the human-readable agent guide."},
+}
+
 func main() {
 	cfg := loadConfig()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -187,6 +203,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /guide", a.guidePage)
 	mux.Handle("GET /assets/", a.static)
 	mux.HandleFunc("GET /healthz", a.health)
+	mux.HandleFunc("GET /api/v1", a.discovery)
 	mux.HandleFunc("GET /api/v1/links", a.listLinks)
 	mux.HandleFunc("POST /api/v1/links", a.createLink)
 	mux.HandleFunc("PATCH /api/v1/links/{id}", a.patchLink)
@@ -198,6 +215,15 @@ func (a *app) logging(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		a.log.Info("request", "method", r.Method, "path", r.URL.Path, "duration_ms", time.Since(start).Milliseconds())
+	})
+}
+
+func (a *app) discovery(w http.ResponseWriter, _ *http.Request) {
+	a.writeJSON(w, http.StatusOK, map[string]any{
+		"service":     "linkshare",
+		"api_version": "v1",
+		"description": "Two-way link inbox for an owner and coding agents.",
+		"endpoints":   publicEndpoints,
 	})
 }
 

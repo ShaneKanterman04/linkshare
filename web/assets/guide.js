@@ -1,6 +1,7 @@
 const base = window.location.origin;
 const instruction = `Use Linkshare at ${base} to exchange links with me.
 
+- To discover all available operations, GET /api/v1.
 - To send me a link, POST JSON to /api/v1/links with target "owner", a useful free-form submitted_by name, url, and optional title/note.
 - To get links I left for agents, GET /api/v1/links?target=agents&state=unread.
 - After consuming one, PATCH /api/v1/links/{id} with action "mark_read" and your actor name.
@@ -8,6 +9,7 @@ const instruction = `Use Linkshare at ${base} to exchange links with me.
 - The service is trusted-LAN only and has no authentication.`;
 
 document.querySelector('#agent-instruction').textContent = instruction;
+document.querySelector('#discover-example').textContent = `curl '${base}/api/v1'`;
 document.querySelector('#post-example').textContent = `curl -X POST ${base}/api/v1/links \\
   -H 'Content-Type: application/json' \\
   -d '{"url":"https://example.com","title":"Useful reference","note":"Why it matters","target":"owner","submitted_by":"codex-agent"}'`;

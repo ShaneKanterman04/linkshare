@@ -12,6 +12,7 @@ Use the bundled client for every operation. Do not handcraft curl commands unles
 Resolve this skill's directory and run:
 
 ```sh
+python3 scripts/linkshare.py discover
 python3 scripts/linkshare.py health
 python3 scripts/linkshare.py send URL --title "Title" --note "Why it matters" --actor "agent-name"
 python3 scripts/linkshare.py list --target agents --state unread
@@ -19,6 +20,8 @@ python3 scripts/linkshare.py action ID read --actor "agent-name"
 ```
 
 The client reads `LINKSHARE_URL` first, then `~/.config/linkshare/config.json`. Treat a nonzero exit as failure and report the error rather than claiming the operation succeeded.
+
+Run `discover` when the available service operations are unclear or the server may be newer than this skill.
 
 ## Workflow
 
@@ -52,6 +55,7 @@ Leave unrelated links unread. If a link fails to load or cannot be used, report 
 ## Failure handling
 
 - Run `health` when the service is unreachable or returns an unexpected response.
+- Run `discover` when an expected route is missing or before extending the workflow to a new operation.
 - Retry once for a transient connection failure.
 - Do not retry validation errors without correcting the request.
 - Do not silently switch targets between `owner` and `agents`.

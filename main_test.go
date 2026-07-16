@@ -77,6 +77,42 @@ func TestLinkLifecycle(t *testing.T) {
 	}
 }
 
+func TestDiscoveryDocument(t *testing.T) {
+	_, handler := testApp(t)
+	response := requestJSON(t, handler, http.MethodGet, "/api/v1", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("discovery status = %d; body = %s", response.Code, response.Body.String())
+	}
+	var document struct {
+		Service    string                `json:"service"`
+		APIVersion string                `json:"api_version"`
+		Endpoints  []endpointDescription `json:"endpoints"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.Service != "linkshare" || document.APIVersion != "v1" {
+		t.Fatalf("unexpected discovery metadata: %+v", document)
+	}
+	found := make(map[string]string)
+	for _, endpoint := range document.Endpoints {
+		found[endpoint.Method+" "+endpoint.Path] = endpoint.Description
+	}
+	for _, expected := range []string{
+		"GET /api/v1",
+		"GET /api/v1/links",
+		"POST /api/v1/links",
+		"PATCH /api/v1/links/{id}",
+		"GET /healthz",
+		"GET /",
+		"GET /guide",
+	} {
+		if found[expected] == "" {
+			t.Errorf("discovery document is missing %s", expected)
+		}
+	}
+}
+
 func TestValidationAndOriginProtection(t *testing.T) {
 	_, handler := testApp(t)
 

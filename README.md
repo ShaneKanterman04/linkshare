@@ -59,6 +59,7 @@ The deterministic client can also be run directly:
 
 ```sh
 python3 skills/linkshare/scripts/linkshare.py health
+python3 skills/linkshare/scripts/linkshare.py discover
 python3 skills/linkshare/scripts/linkshare.py send https://example.com --title "Example" --actor codex-agent
 python3 skills/linkshare/scripts/linkshare.py list --target agents --state unread
 python3 skills/linkshare/scripts/linkshare.py action 12 read --actor codex-agent
@@ -69,6 +70,9 @@ Set `LINKSHARE_URL` to override the configured endpoint.
 ## API
 
 ```sh
+# Discover every supported endpoint
+curl http://LINKSHARE_HOST:8080/api/v1
+
 # Send a link to the owner
 curl -X POST http://LINKSHARE_HOST:8080/api/v1/links \
   -H 'Content-Type: application/json' \

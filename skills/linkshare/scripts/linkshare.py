@@ -115,6 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Use the Linkshare homelab service")
     commands = parser.add_subparsers(dest="command", required=True)
 
+    commands.add_parser("discover", help="List available service endpoints")
     commands.add_parser("health", help="Check service health")
 
     send = commands.add_parser("send", help="Create a link")
@@ -145,6 +146,9 @@ def build_parser() -> argparse.ArgumentParser:
 def run(args: argparse.Namespace) -> Any:
     config = load_config()
     base_url = resolve_base_url(config)
+
+    if args.command == "discover":
+        return request_json(base_url, "GET", "/api/v1")
 
     if args.command == "health":
         return request_json(base_url, "GET", "/healthz")
