@@ -1,0 +1,7 @@
+interface:
+  display_name: "Linkshare"
+  short_description: "Share and consume links with Linkshare"
+  default_prompt: "Use $linkshare to share a link with me or check links waiting for agents."
+
+policy:
+  allow_implicit_invocation: true

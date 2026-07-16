@@ -1,0 +1,9 @@
+/data/
+/dist/
+/linkshare
+.linkshare-deploy.env
+__pycache__/
+*.pyc
+*.db
+*.db-shm
+*.db-wal

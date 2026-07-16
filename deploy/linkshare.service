@@ -1,0 +1,31 @@
+[Unit]
+Description=Linkshare two-way link inbox
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=linkshare
+Group=linkshare
+EnvironmentFile=/etc/linkshare.env
+WorkingDirectory=/var/lib/linkshare
+ExecStart=/usr/local/bin/linkshare
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=15s
+StateDirectory=linkshare
+StateDirectoryMode=0700
+UMask=0077
+
+NoNewPrivileges=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

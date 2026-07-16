@@ -1,0 +1,6 @@
+.git
+.linkshare-deploy.env
+data
+dist
+*.db*
+linkshare

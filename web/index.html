@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="owner-name" content="{{.OwnerName}}">
+  <title>Linkshare</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Linkshare home"><span class="brand-mark">↗</span> Linkshare</a>
+    <a class="guide-link" href="/guide">Agent guide</a>
+  </header>
+
+  <main class="layout">
+    <section class="composer" aria-labelledby="share-heading">
+      <div>
+        <p class="eyebrow">New link</p>
+        <h1 id="share-heading">Share something useful</h1>
+      </div>
+      <form id="link-form">
+        <label>URL <input id="url" name="url" type="url" maxlength="2048" placeholder="https://…" required autofocus></label>
+        <div class="form-row">
+          <label>Title <input id="title" name="title" maxlength="200" placeholder="Optional"></label>
+          <label>Send to
+            <select id="target" name="target">
+              <option value="agents">For agents</option>
+              <option value="owner">For me</option>
+            </select>
+          </label>
+        </div>
+        <label>Note <textarea id="note" name="note" maxlength="4000" rows="3" placeholder="Why this matters (optional)"></textarea></label>
+        <div class="form-actions">
+          <span id="form-status" class="muted" role="status"></span>
+          <button class="primary" type="submit">Share link</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="inbox" aria-labelledby="inbox-heading">
+      <div class="inbox-heading">
+        <div>
+          <p class="eyebrow">Inbox</p>
+          <h2 id="inbox-heading">Links waiting for you</h2>
+        </div>
+        <button id="refresh" class="icon-button" type="button" aria-label="Refresh links" title="Refresh">↻</button>
+      </div>
+
+      <div class="tabs" role="tablist" aria-label="Link inboxes">
+        <button class="tab active" data-target="owner" role="tab" aria-selected="true">For me <span id="owner-count" class="count">0</span></button>
+        <button class="tab" data-target="agents" role="tab" aria-selected="false">For agents <span id="agents-count" class="count">0</span></button>
+      </div>
+      <div class="filters" aria-label="Filter links">
+        <button class="filter active" data-state="active">Active</button>
+        <button class="filter" data-state="unread">Unread</button>
+        <button class="filter" data-state="read">Read</button>
+        <button class="filter" data-state="archived">Archived</button>
+      </div>
+
+      <div id="notice" class="notice" hidden role="alert"></div>
+      <div id="links" class="links" aria-live="polite"></div>
+    </section>
+  </main>
+</body>
+</html>
