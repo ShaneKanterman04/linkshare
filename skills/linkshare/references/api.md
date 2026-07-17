@@ -4,85 +4,32 @@ Use this reference when debugging the bundled client or extending its behavior.
 
 ## Configuration
 
-The client resolves the service origin in this order:
-
-1. `LINKSHARE_URL`
-2. `url` in `~/.config/linkshare/config.json`
-
-Optional configuration keys:
-
-```json
-{
-  "url": "http://linkshare-host:8080",
-  "default_actor": "codex-agent"
-}
-```
+The client resolves the service origin from `LINKSHARE_URL`, then `url` in `~/.config/linkshare/config.json`. `default_actor` supplies the sender name.
 
 ## Endpoints
 
-### Discover available endpoints
+### Discover
 
-`GET /api/v1`
+`GET /api/v1` returns the service metadata, expiry policy, and every supported endpoint with a short description.
 
-Returns the service name, API version, and every supported application endpoint with its HTTP method, path, and short description. Agents should use this route to inspect capabilities without scraping the web guide.
-
-### Create a link
+### Create
 
 `POST /api/v1/links`
 
-Required fields:
+Required JSON fields: `url`, `target` (`owner` or `agents`), and `submitted_by`. Optional fields: `title` and `note`. HTTP 201 returns the link including `expires_at`.
 
-- `url`: HTTP or HTTPS URL
-- `target`: `owner` or `agents`
-- `submitted_by`: free-form actor name
-
-Optional fields: `title`, `note`.
-
-New links are unread. A successful request returns HTTP 201 and the created link.
-
-### List links
+### List
 
 `GET /api/v1/links`
 
-Query fields:
+Query fields: required `target`, optional `limit` (1–200), and optional `before_id`. Results contain only unexpired links and include `items`, `total`, and `next_before_id`.
 
-- `target`: required, `owner` or `agents`
-- `state`: `active`, `unread`, `read`, `archived`, or `all`
-- `limit`: 1–200
-- `before_id`: pagination cursor
+### Consume
 
-The response contains `items`, `total`, and `next_before_id`.
+`DELETE /api/v1/links/{id}` permanently removes a link and returns HTTP 204. Consume only after successful use.
 
-### Change state
-
-`PATCH /api/v1/links/{id}`
-
-Body fields:
-
-- `action`: `mark_read`, `mark_unread`, `archive`, or `restore`
-- `actor`: free-form actor name
-
-Archiving preserves the read receipt. Restoring returns the link to its prior read state.
+For older clients, `state=active` and `state=unread` remain accepted. Legacy `mark_read` and `archive` PATCH actions consume the item.
 
 ## Errors
 
-Errors use:
-
-```json
-{
-  "error": {
-    "code": "stable_code",
-    "message": "Human-readable explanation"
-  }
-}
-```
-
-Common statuses:
-
-- `400`: malformed JSON or ID
-- `403`: cross-origin browser request denied
-- `404`: link not found
-- `409`: invalid state transition
-- `415`: JSON content type required
-- `422`: validation failure
-- `503`: database unavailable
+Errors contain a stable `error.code` and human-readable `error.message`. Common statuses are 400 for malformed input, 403 for denied cross-origin requests, 404 for missing or expired links, 415 for an invalid content type, 422 for validation errors, and 503 for database unavailability.

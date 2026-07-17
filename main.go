@@ -27,6 +27,7 @@ const (
 	maxBodyBytes = 16 << 10
 	defaultLimit = 50
 	maxLimit     = 200
+	defaultTTL   = 7 * 24 * time.Hour
 )
 
 //go:embed web/* web/assets/*
@@ -36,30 +37,28 @@ type config struct {
 	Addr      string
 	DBPath    string
 	OwnerName string
+	LinkTTL   time.Duration
 }
 
 type app struct {
 	db        *sql.DB
 	log       *slog.Logger
 	ownerName string
+	linkTTL   time.Duration
 	index     *template.Template
 	static    http.Handler
 	now       func() time.Time
 }
 
 type link struct {
-	ID          int64   `json:"id"`
-	URL         string  `json:"url"`
-	Title       string  `json:"title"`
-	Note        string  `json:"note"`
-	Target      string  `json:"target"`
-	SubmittedBy string  `json:"submitted_by"`
-	CreatedAt   string  `json:"created_at"`
-	UpdatedAt   string  `json:"updated_at"`
-	ReadAt      *string `json:"read_at"`
-	ReadBy      *string `json:"read_by"`
-	ArchivedAt  *string `json:"archived_at"`
-	ArchivedBy  *string `json:"archived_by"`
+	ID          int64  `json:"id"`
+	URL         string `json:"url"`
+	Title       string `json:"title"`
+	Note        string `json:"note"`
+	Target      string `json:"target"`
+	SubmittedBy string `json:"submitted_by"`
+	CreatedAt   string `json:"created_at"`
+	ExpiresAt   string `json:"expires_at"`
 }
 
 type apiError struct {
@@ -76,27 +75,33 @@ type endpointDescription struct {
 }
 
 var publicEndpoints = []endpointDescription{
-	{Method: http.MethodGet, Path: "/api/v1", Description: "List available Linkshare endpoints."},
-	{Method: http.MethodGet, Path: "/api/v1/links", Description: "List and filter links in an inbox."},
-	{Method: http.MethodPost, Path: "/api/v1/links", Description: "Create a link for the owner or agents."},
-	{Method: http.MethodPatch, Path: "/api/v1/links/{id}", Description: "Mark a link read or unread, archive it, or restore it."},
+	{Method: http.MethodGet, Path: "/api/v1", Description: "List available Linkshare endpoints and expiry policy."},
+	{Method: http.MethodGet, Path: "/api/v1/links", Description: "List unexpired links waiting in an inbox."},
+	{Method: http.MethodPost, Path: "/api/v1/links", Description: "Create an expiring link for the owner or agents."},
+	{Method: http.MethodDelete, Path: "/api/v1/links/{id}", Description: "Consume or dismiss a link permanently."},
+	{Method: http.MethodPatch, Path: "/api/v1/links/{id}", Description: "Legacy consume compatibility; use DELETE for new clients."},
 	{Method: http.MethodGet, Path: "/healthz", Description: "Check service and database health."},
 	{Method: http.MethodGet, Path: "/", Description: "Open the Linkshare web interface."},
 	{Method: http.MethodGet, Path: "/guide", Description: "Open the human-readable agent guide."},
 }
 
 func main() {
-	cfg := loadConfig()
+	cfg, err := loadConfig()
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
+	if err != nil {
+		logger.Error("load configuration", "error", err)
+		os.Exit(1)
+	}
 
-	db, err := openDB(cfg.DBPath)
+	now := time.Now().UTC()
+	db, err := openDB(cfg.DBPath, now, cfg.LinkTTL)
 	if err != nil {
 		logger.Error("open database", "error", err)
 		os.Exit(1)
 	}
 	defer db.Close()
 
-	a, err := newApp(db, logger, cfg.OwnerName)
+	a, err := newApp(db, logger, cfg.OwnerName, cfg.LinkTTL)
 	if err != nil {
 		logger.Error("initialize application", "error", err)
 		os.Exit(1)
@@ -113,6 +118,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	a.startCleanup(ctx)
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -122,19 +128,25 @@ func main() {
 		}
 	}()
 
-	logger.Info("linkshare listening", "address", cfg.Addr, "database", cfg.DBPath)
+	logger.Info("linkshare listening", "address", cfg.Addr, "database", cfg.DBPath, "link_ttl", cfg.LinkTTL.String())
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
 }
 
-func loadConfig() config {
+func loadConfig() (config, error) {
+	rawTTL := envOr("LINKSHARE_LINK_TTL", defaultTTL.String())
+	linkTTL, err := time.ParseDuration(rawTTL)
+	if err != nil || linkTTL <= 0 {
+		return config{}, fmt.Errorf("LINKSHARE_LINK_TTL must be a positive duration such as 168h")
+	}
 	return config{
 		Addr:      envOr("LINKSHARE_ADDR", ":8080"),
 		DBPath:    envOr("LINKSHARE_DB", "./linkshare.db"),
 		OwnerName: envOr("LINKSHARE_OWNER_NAME", "Me"),
-	}
+		LinkTTL:   linkTTL,
+	}, nil
 }
 
 func envOr(key, fallback string) string {
@@ -144,40 +156,96 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-func openDB(path string) (*sql.DB, error) {
+func openDB(path string, now time.Time, ttl time.Duration) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	for _, statement := range []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA busy_timeout=5000",
-		`CREATE TABLE IF NOT EXISTS links (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			url TEXT NOT NULL,
-			title TEXT NOT NULL DEFAULT '',
-			note TEXT NOT NULL DEFAULT '',
-			target TEXT NOT NULL CHECK (target IN ('owner', 'agents')),
-			submitted_by TEXT NOT NULL,
-			created_at TEXT NOT NULL,
-			updated_at TEXT NOT NULL,
-			read_at TEXT,
-			read_by TEXT,
-			archived_at TEXT,
-			archived_by TEXT
-		)`,
-		"CREATE INDEX IF NOT EXISTS links_target_state_id ON links(target, archived_at, read_at, id DESC)",
-	} {
+	for _, statement := range []string{"PRAGMA journal_mode=WAL", "PRAGMA busy_timeout=5000"} {
 		if _, err := db.Exec(statement); err != nil {
 			db.Close()
 			return nil, fmt.Errorf("database setup: %w", err)
 		}
 	}
+	if err := migrateDB(db, now.UTC(), ttl); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
 }
 
-func newApp(db *sql.DB, logger *slog.Logger, ownerName string) (*app, error) {
+func migrateDB(db *sql.DB, now time.Time, ttl time.Duration) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("database migration: %w", err)
+	}
+	defer tx.Rollback()
+
+	var tableCount int
+	if err := tx.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'links'").Scan(&tableCount); err != nil {
+		return fmt.Errorf("database migration: %w", err)
+	}
+	if tableCount == 0 {
+		if _, err := tx.Exec(newLinksTableSQL("links")); err != nil {
+			return fmt.Errorf("database migration: %w", err)
+		}
+	} else {
+		var expiryColumnCount int
+		if err := tx.QueryRow("SELECT COUNT(*) FROM pragma_table_info('links') WHERE name = 'expires_at'").Scan(&expiryColumnCount); err != nil {
+			return fmt.Errorf("database migration: %w", err)
+		}
+		if expiryColumnCount == 0 {
+			if _, err := tx.Exec(newLinksTableSQL("links_v2")); err != nil {
+				return fmt.Errorf("database migration: %w", err)
+			}
+			expiresAt := now.Add(ttl).Format(time.RFC3339Nano)
+			if _, err := tx.Exec(`INSERT INTO links_v2 (id, url, title, note, target, submitted_by, created_at, expires_at)
+				SELECT id, url, title, note, target, submitted_by, created_at, ?
+				FROM links WHERE read_at IS NULL AND archived_at IS NULL`, expiresAt); err != nil {
+				return fmt.Errorf("database migration: %w", err)
+			}
+			if _, err := tx.Exec("DROP TABLE links"); err != nil {
+				return fmt.Errorf("database migration: %w", err)
+			}
+			if _, err := tx.Exec("ALTER TABLE links_v2 RENAME TO links"); err != nil {
+				return fmt.Errorf("database migration: %w", err)
+			}
+		}
+	}
+	for _, statement := range []string{
+		"CREATE INDEX IF NOT EXISTS links_target_expiry_id ON links(target, expires_at, id DESC)",
+		"PRAGMA user_version = 2",
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("database migration: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("database migration: %w", err)
+	}
+	return nil
+}
+
+func newLinksTableSQL(name string) string {
+	return `CREATE TABLE ` + name + ` (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		url TEXT NOT NULL,
+		title TEXT NOT NULL DEFAULT '',
+		note TEXT NOT NULL DEFAULT '',
+		target TEXT NOT NULL CHECK (target IN ('owner', 'agents')),
+		submitted_by TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		expires_at TEXT NOT NULL DEFAULT '9999-12-31T23:59:59Z',
+		updated_at TEXT NOT NULL DEFAULT '',
+		read_at TEXT,
+		read_by TEXT,
+		archived_at TEXT,
+		archived_by TEXT
+	)`
+}
+
+func newApp(db *sql.DB, logger *slog.Logger, ownerName string, linkTTL time.Duration) (*app, error) {
 	indexBytes, err := webFiles.ReadFile("web/index.html")
 	if err != nil {
 		return nil, err
@@ -191,7 +259,7 @@ func newApp(db *sql.DB, logger *slog.Logger, ownerName string) (*app, error) {
 		return nil, err
 	}
 	return &app{
-		db: db, log: logger, ownerName: ownerName, index: index,
+		db: db, log: logger, ownerName: ownerName, linkTTL: linkTTL, index: index,
 		static: http.StripPrefix("/assets/", http.FileServer(http.FS(assets))),
 		now:    func() time.Time { return time.Now().UTC() },
 	}, nil
@@ -206,6 +274,7 @@ func (a *app) routes() http.Handler {
 	mux.HandleFunc("GET /api/v1", a.discovery)
 	mux.HandleFunc("GET /api/v1/links", a.listLinks)
 	mux.HandleFunc("POST /api/v1/links", a.createLink)
+	mux.HandleFunc("DELETE /api/v1/links/{id}", a.consumeLink)
 	mux.HandleFunc("PATCH /api/v1/links/{id}", a.patchLink)
 	return a.logging(mux)
 }
@@ -220,10 +289,12 @@ func (a *app) logging(next http.Handler) http.Handler {
 
 func (a *app) discovery(w http.ResponseWriter, _ *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{
-		"service":     "linkshare",
-		"api_version": "v1",
-		"description": "Two-way link inbox for an owner and coding agents.",
-		"endpoints":   publicEndpoints,
+		"service":              "linkshare",
+		"api_version":          "v1",
+		"description":          "One-time link inbox for an owner and coding agents.",
+		"link_ttl_seconds":     int64(a.linkTTL / time.Second),
+		"consumption_behavior": "Consumed links are permanently removed.",
+		"endpoints":            publicEndpoints,
 	})
 }
 
@@ -239,7 +310,7 @@ func (a *app) indexPage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *app) guidePage(w http.ResponseWriter, r *http.Request) {
+func (a *app) guidePage(w http.ResponseWriter, _ *http.Request) {
 	data, err := webFiles.ReadFile("web/guide.html")
 	if err != nil {
 		http.Error(w, "guide unavailable", http.StatusInternalServerError)
@@ -286,10 +357,12 @@ func (a *app) createLink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := a.now().Format(time.RFC3339Nano)
+	now := a.now().UTC()
+	createdAt := now.Format(time.RFC3339Nano)
+	expiresAt := now.Add(a.linkTTL).Format(time.RFC3339Nano)
 	result, err := a.db.ExecContext(r.Context(), `
-		INSERT INTO links (url, title, note, target, submitted_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`, input.URL, input.Title, input.Note, input.Target, input.SubmittedBy, now, now)
+		INSERT INTO links (url, title, note, target, submitted_by, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, input.URL, input.Title, input.Note, input.Target, input.SubmittedBy, createdAt, expiresAt)
 	if err != nil {
 		a.log.Error("create link", "error", err)
 		a.writeError(w, http.StatusInternalServerError, "database_error", "could not save link")
@@ -311,11 +384,12 @@ func (a *app) listLinks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := r.URL.Query().Get("state")
-	if state == "" {
-		state = "active"
-	}
-	condition, ok := stateCondition(state)
-	if !ok {
+	switch state {
+	case "", "active", "unread", "all":
+	case "read", "archived":
+		a.writeJSON(w, http.StatusOK, map[string]any{"items": []link{}, "total": 0, "next_before_id": nil})
+		return
+	default:
 		a.writeError(w, http.StatusUnprocessableEntity, "invalid_state", "state must be active, unread, read, archived, or all")
 		return
 	}
@@ -338,15 +412,20 @@ func (a *app) listLinks(w http.ResponseWriter, r *http.Request) {
 		beforeID = parsed
 	}
 
-	baseWhere := "target = ? AND " + condition
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	if err := a.cleanupExpired(r.Context()); err != nil {
+		a.writeError(w, http.StatusInternalServerError, "database_error", "could not clean expired links")
+		return
+	}
+	baseWhere := "target = ? AND expires_at > ?"
+	baseArgs := []any{target, now}
 	var total int
-	if err := a.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM links WHERE "+baseWhere, target).Scan(&total); err != nil {
+	if err := a.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM links WHERE "+baseWhere, baseArgs...).Scan(&total); err != nil {
 		a.writeError(w, http.StatusInternalServerError, "database_error", "could not count links")
 		return
 	}
-	query := `SELECT id, url, title, note, target, submitted_by, created_at, updated_at,
-		read_at, read_by, archived_at, archived_by FROM links WHERE ` + baseWhere
-	args := []any{target}
+	query := `SELECT id, url, title, note, target, submitted_by, created_at, expires_at FROM links WHERE ` + baseWhere
+	args := append([]any{}, baseArgs...)
 	if beforeID > 0 {
 		query += " AND id < ?"
 		args = append(args, beforeID)
@@ -377,6 +456,26 @@ func (a *app) listLinks(w http.ResponseWriter, r *http.Request) {
 	a.writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": total, "next_before_id": next})
 }
 
+func (a *app) consumeLink(w http.ResponseWriter, r *http.Request) {
+	if !sameOrigin(r) {
+		a.writeError(w, http.StatusForbidden, "cross_origin_denied", "cross-origin requests are not allowed")
+		return
+	}
+	id, ok := parseLinkID(w, r, a)
+	if !ok {
+		return
+	}
+	if err := a.deleteLink(r.Context(), id); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			a.writeError(w, http.StatusNotFound, "not_found", "link not found or expired")
+		} else {
+			a.writeError(w, http.StatusInternalServerError, "database_error", "could not consume link")
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (a *app) patchLink(w http.ResponseWriter, r *http.Request) {
 	if !sameOrigin(r) {
 		a.writeError(w, http.StatusForbidden, "cross_origin_denied", "cross-origin requests are not allowed")
@@ -386,9 +485,8 @@ func (a *app) patchLink(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusUnsupportedMediaType, "json_required", "Content-Type must be application/json")
 		return
 	}
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	if err != nil || id < 1 {
-		a.writeError(w, http.StatusBadRequest, "invalid_id", "link id must be a positive integer")
+	id, ok := parseLinkID(w, r, a)
+	if !ok {
 		return
 	}
 	var input struct {
@@ -404,65 +502,70 @@ func (a *app) patchLink(w http.ResponseWriter, r *http.Request) {
 		a.writeError(w, http.StatusUnprocessableEntity, "invalid_actor", "actor is required and must be at most 80 characters")
 		return
 	}
-	now := a.now().Format(time.RFC3339Nano)
-	var query string
-	var args []any
-	switch input.Action {
-	case "mark_read":
-		query = "UPDATE links SET read_at = ?, read_by = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL"
-		args = []any{now, input.Actor, now, id}
-	case "mark_unread":
-		query = "UPDATE links SET read_at = NULL, read_by = NULL, updated_at = ? WHERE id = ? AND archived_at IS NULL"
-		args = []any{now, id}
-	case "archive":
-		query = "UPDATE links SET archived_at = ?, archived_by = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL"
-		args = []any{now, input.Actor, now, id}
-	case "restore":
-		query = "UPDATE links SET archived_at = NULL, archived_by = NULL, updated_at = ? WHERE id = ? AND archived_at IS NOT NULL"
-		args = []any{now, id}
-	default:
-		a.writeError(w, http.StatusUnprocessableEntity, "invalid_action", "action must be mark_read, mark_unread, archive, or restore")
+	if input.Action != "mark_read" && input.Action != "archive" {
+		a.writeError(w, http.StatusUnprocessableEntity, "invalid_action", "one-time links cannot be restored; use DELETE to consume them")
 		return
 	}
-	result, err := a.db.ExecContext(r.Context(), query, args...)
-	if err != nil {
-		a.writeError(w, http.StatusInternalServerError, "database_error", "could not update link")
-		return
-	}
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		var exists int
-		err := a.db.QueryRowContext(r.Context(), "SELECT 1 FROM links WHERE id = ?", id).Scan(&exists)
+	if err := a.deleteLink(r.Context(), id); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			a.writeError(w, http.StatusNotFound, "not_found", "link not found")
+			a.writeError(w, http.StatusNotFound, "not_found", "link not found or expired")
 		} else {
-			a.writeError(w, http.StatusConflict, "invalid_transition", "action is not valid for the link's current state")
+			a.writeError(w, http.StatusInternalServerError, "database_error", "could not consume link")
 		}
 		return
 	}
-	item, err := a.getLink(r.Context(), id)
-	if err != nil {
-		a.writeError(w, http.StatusInternalServerError, "database_error", "could not load updated link")
-		return
-	}
-	a.writeJSON(w, http.StatusOK, item)
+	a.writeJSON(w, http.StatusOK, map[string]any{"id": id, "consumed": true})
 }
 
-func stateCondition(state string) (string, bool) {
-	switch state {
-	case "active":
-		return "archived_at IS NULL", true
-	case "unread":
-		return "archived_at IS NULL AND read_at IS NULL", true
-	case "read":
-		return "archived_at IS NULL AND read_at IS NOT NULL", true
-	case "archived":
-		return "archived_at IS NOT NULL", true
-	case "all":
-		return "1 = 1", true
-	default:
-		return "", false
+func parseLinkID(w http.ResponseWriter, r *http.Request, a *app) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || id < 1 {
+		a.writeError(w, http.StatusBadRequest, "invalid_id", "link id must be a positive integer")
+		return 0, false
 	}
+	return id, true
+}
+
+func (a *app) deleteLink(ctx context.Context, id int64) error {
+	now := a.now().UTC().Format(time.RFC3339Nano)
+	result, err := a.db.ExecContext(ctx, "DELETE FROM links WHERE id = ? AND expires_at > ?", id, now)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		_ = a.cleanupExpired(ctx)
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (a *app) cleanupExpired(ctx context.Context) error {
+	_, err := a.db.ExecContext(ctx, "DELETE FROM links WHERE expires_at <= ?", a.now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (a *app) startCleanup(ctx context.Context) {
+	go func() {
+		if err := a.cleanupExpired(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			a.log.Error("clean expired links", "error", err)
+		}
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := a.cleanupExpired(ctx); err != nil && !errors.Is(err, context.Canceled) {
+					a.log.Error("clean expired links", "error", err)
+				}
+			}
+		}
+	}()
 }
 
 func validateLink(rawURL, title, note, target, submittedBy string) string {
@@ -516,29 +619,12 @@ type scanner interface {
 
 func scanLink(s scanner) (link, error) {
 	var item link
-	var readAt, readBy, archivedAt, archivedBy sql.NullString
-	err := s.Scan(&item.ID, &item.URL, &item.Title, &item.Note, &item.Target, &item.SubmittedBy,
-		&item.CreatedAt, &item.UpdatedAt, &readAt, &readBy, &archivedAt, &archivedBy)
-	if err != nil {
-		return item, err
-	}
-	item.ReadAt = nullString(readAt)
-	item.ReadBy = nullString(readBy)
-	item.ArchivedAt = nullString(archivedAt)
-	item.ArchivedBy = nullString(archivedBy)
-	return item, nil
-}
-
-func nullString(value sql.NullString) *string {
-	if !value.Valid {
-		return nil
-	}
-	return &value.String
+	err := s.Scan(&item.ID, &item.URL, &item.Title, &item.Note, &item.Target, &item.SubmittedBy, &item.CreatedAt, &item.ExpiresAt)
+	return item, err
 }
 
 func (a *app) getLink(ctx context.Context, id int64) (link, error) {
-	row := a.db.QueryRowContext(ctx, `SELECT id, url, title, note, target, submitted_by, created_at, updated_at,
-		read_at, read_by, archived_at, archived_by FROM links WHERE id = ?`, id)
+	row := a.db.QueryRowContext(ctx, `SELECT id, url, title, note, target, submitted_by, created_at, expires_at FROM links WHERE id = ?`, id)
 	return scanLink(row)
 }
 

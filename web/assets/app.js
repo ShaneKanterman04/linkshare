@@ -1,18 +1,19 @@
 const ownerName = document.querySelector('meta[name="owner-name"]').content || 'Me';
-const state = { target: 'owner', filter: 'active', loading: false };
+const state = { target: 'owner', loading: false };
 
 const linksNode = document.querySelector('#links');
 const noticeNode = document.querySelector('#notice');
 const inboxHeading = document.querySelector('#inbox-heading');
+const form = document.querySelector('#link-form');
 
-document.querySelector('#link-form').addEventListener('submit', async (event) => {
+form.addEventListener('submit', async (event) => {
   event.preventDefault();
   const status = document.querySelector('#form-status');
-  const button = event.currentTarget.querySelector('button[type="submit"]');
+  const button = form.querySelector('button[type="submit"]');
   status.textContent = 'Sharing…';
   button.disabled = true;
   try {
-    const response = await api('/api/v1/links', {
+    const created = await api('/api/v1/links', {
       method: 'POST',
       body: JSON.stringify({
         url: document.querySelector('#url').value,
@@ -22,11 +23,12 @@ document.querySelector('#link-form').addEventListener('submit', async (event) =>
         submitted_by: ownerName,
       }),
     });
-    event.currentTarget.reset();
+    form.reset();
     document.querySelector('#target').value = 'agents';
-    status.textContent = `Shared #${response.id}`;
+    document.querySelector('#details').open = false;
+    status.textContent = `Shared · expires ${formatExpiry(created.expires_at)}`;
     await refresh();
-    setTimeout(() => { status.textContent = ''; }, 2500);
+    setTimeout(() => { status.textContent = ''; }, 3000);
   } catch (error) {
     status.textContent = error.message;
   } finally {
@@ -41,13 +43,7 @@ document.querySelectorAll('.tab').forEach((button) => button.addEventListener('c
     item.classList.toggle('active', selected);
     item.setAttribute('aria-selected', selected);
   });
-  inboxHeading.textContent = state.target === 'owner' ? 'Links waiting for you' : 'Links waiting for agents';
-  refresh();
-}));
-
-document.querySelectorAll('.filter').forEach((button) => button.addEventListener('click', () => {
-  state.filter = button.dataset.state;
-  document.querySelectorAll('.filter').forEach((item) => item.classList.toggle('active', item === button));
+  inboxHeading.textContent = state.target === 'owner' ? 'Waiting for you' : 'Waiting for agents';
   refresh();
 }));
 
@@ -58,18 +54,17 @@ async function refresh() {
   state.loading = true;
   document.querySelector('#refresh').classList.add('spinning');
   try {
-    const [result, ownerUnread, agentsUnread] = await Promise.all([
-      api(`/api/v1/links?target=${state.target}&state=${state.filter}&limit=200`),
-      api('/api/v1/links?target=owner&state=unread&limit=1'),
-      api('/api/v1/links?target=agents&state=unread&limit=1'),
+    const [result, owner, agents] = await Promise.all([
+      api(`/api/v1/links?target=${state.target}&limit=200`),
+      api('/api/v1/links?target=owner&limit=1'),
+      api('/api/v1/links?target=agents&limit=1'),
     ]);
-    document.querySelector('#owner-count').textContent = ownerUnread.total;
-    document.querySelector('#agents-count').textContent = agentsUnread.total;
+    document.querySelector('#owner-count').textContent = owner.total;
+    document.querySelector('#agents-count').textContent = agents.total;
     renderLinks(result.items);
     noticeNode.hidden = true;
   } catch (error) {
-    noticeNode.textContent = error.message;
-    noticeNode.hidden = false;
+    showError(error.message);
   } finally {
     state.loading = false;
     document.querySelector('#refresh').classList.remove('spinning');
@@ -79,95 +74,79 @@ async function refresh() {
 function renderLinks(items) {
   linksNode.replaceChildren();
   if (!items.length) {
-    const empty = document.createElement('div');
+    const empty = document.createElement('p');
     empty.className = 'empty';
-    empty.innerHTML = '<span>✓</span><h3>Nothing here</h3><p>This inbox is clear.</p>';
+    empty.textContent = 'Nothing waiting.';
     linksNode.append(empty);
     return;
   }
-  items.forEach((item) => linksNode.append(linkCard(item)));
+  items.forEach((item) => linksNode.append(linkRow(item)));
 }
 
-function linkCard(item) {
-  const card = document.createElement('article');
-  card.className = `link-card${item.read_at ? ' read' : ''}`;
+function linkRow(item) {
+  const row = document.createElement('article');
+  row.className = 'link-row';
   const parsed = new URL(item.url);
-  const archived = Boolean(item.archived_at);
 
-  const header = document.createElement('div');
-  header.className = 'link-card-header';
-  const text = document.createElement('div');
+  const content = document.createElement('div');
+  content.className = 'link-content';
   const title = document.createElement('a');
   title.className = 'link-title';
   title.href = item.url;
   title.target = '_blank';
   title.rel = 'noopener noreferrer';
   title.textContent = item.title || parsed.hostname;
-  title.addEventListener('click', () => {
-    if (!item.read_at && !archived) perform(item.id, 'mark_read', false);
-  });
-  const host = document.createElement('p');
-  host.className = 'link-host';
-  host.textContent = parsed.hostname;
-  text.append(title, host);
-  const badge = document.createElement('span');
-  badge.className = archived ? 'badge archived' : item.read_at ? 'badge read-badge' : 'badge unread';
-  badge.textContent = archived ? 'Archived' : item.read_at ? 'Read' : 'Unread';
-  header.append(text, badge);
-  card.append(header);
+  title.addEventListener('click', () => consume(item.id, row));
+  content.append(title);
 
   if (item.note) {
     const note = document.createElement('p');
     note.className = 'link-note';
     note.textContent = item.note;
-    card.append(note);
+    content.append(note);
   }
 
   const meta = document.createElement('p');
   meta.className = 'link-meta';
-  meta.textContent = `From ${item.submitted_by} · ${formatTime(item.created_at)}`;
-  if (item.read_by) meta.textContent += ` · Read by ${item.read_by}`;
-  card.append(meta);
+  const expiry = document.createElement('span');
+  expiry.textContent = formatExpiry(item.expires_at);
+  expiry.title = new Date(item.expires_at).toLocaleString();
+  meta.append(`${parsed.hostname} · from ${item.submitted_by} · `, expiry);
+  content.append(meta);
 
   const actions = document.createElement('div');
-  actions.className = 'card-actions';
-  actions.append(actionLink('Open', item.url), actionButton('Copy', () => copyText(item.url)));
-  if (archived) {
-    actions.append(actionButton('Restore', () => perform(item.id, 'restore')));
-  } else {
-    actions.append(actionButton(item.read_at ? 'Mark unread' : 'Mark read', () => perform(item.id, item.read_at ? 'mark_unread' : 'mark_read')));
-    actions.append(actionButton('Archive', () => perform(item.id, 'archive')));
-  }
-  card.append(actions);
-  return card;
+  actions.className = 'row-actions';
+  const open = document.createElement('a');
+  open.className = 'open-link';
+  open.href = item.url;
+  open.target = '_blank';
+  open.rel = 'noopener noreferrer';
+  open.setAttribute('aria-label', `Open ${title.textContent}`);
+  open.title = 'Open and clear';
+  open.textContent = '↗';
+  open.addEventListener('click', () => consume(item.id, row));
+  const dismiss = document.createElement('button');
+  dismiss.className = 'dismiss';
+  dismiss.type = 'button';
+  dismiss.setAttribute('aria-label', `Dismiss ${title.textContent}`);
+  dismiss.title = 'Dismiss';
+  dismiss.textContent = '×';
+  dismiss.addEventListener('click', () => consume(item.id, row));
+  actions.append(open, dismiss);
+
+  row.append(content, actions);
+  return row;
 }
 
-function actionButton(label, handler) {
-  const button = document.createElement('button');
-  button.className = 'text-button';
-  button.type = 'button';
-  button.textContent = label;
-  button.addEventListener('click', handler);
-  return button;
-}
-
-function actionLink(label, href) {
-  const link = document.createElement('a');
-  link.className = 'text-button';
-  link.href = href;
-  link.target = '_blank';
-  link.rel = 'noopener noreferrer';
-  link.textContent = label;
-  return link;
-}
-
-async function perform(id, action, refreshAfter = true) {
+async function consume(id, row) {
+  row.classList.add('leaving');
   try {
-    await api(`/api/v1/links/${id}`, { method: 'PATCH', body: JSON.stringify({ action, actor: ownerName }) });
-    if (refreshAfter) await refresh();
+    await api(`/api/v1/links/${id}`, { method: 'DELETE' });
+    row.remove();
+    await refresh();
   } catch (error) {
-    noticeNode.textContent = error.message;
-    noticeNode.hidden = false;
+    row.classList.remove('leaving');
+    showError(error.message);
   }
 }
 
@@ -176,18 +155,23 @@ async function api(path, options = {}) {
     ...options,
     headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
   });
+  if (response.status === 204) return null;
   const data = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(data.error?.message || `Request failed (${response.status})`);
   return data;
 }
 
-function formatTime(value) {
-  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value));
+function formatExpiry(value) {
+  const milliseconds = new Date(value).getTime() - Date.now();
+  const hours = Math.max(0, Math.ceil(milliseconds / 3600000));
+  if (hours < 24) return `expires in ${hours}h`;
+  return `expires in ${Math.ceil(hours / 24)}d`;
 }
 
-async function copyText(value) {
-  try { await navigator.clipboard.writeText(value); } catch (_) { /* Clipboard can be blocked on plain HTTP. */ }
+function showError(message) {
+  noticeNode.textContent = message;
+  noticeNode.hidden = false;
 }
 
 refresh();
-setInterval(refresh, 15000);
+setInterval(refresh, 30000);

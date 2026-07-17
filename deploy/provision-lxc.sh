@@ -21,6 +21,8 @@ source "$DEPLOY_CONFIG"
 : "${LAN_CIDR:?LAN_CIDR is required}"
 : "${LINKSHARE_PORT:?LINKSHARE_PORT is required}"
 : "${OWNER_NAME:?OWNER_NAME is required}"
+: "${BACKUP_STORAGE:?BACKUP_STORAGE is required}"
+LINK_TTL="${LINK_TTL:-168h}"
 
 DIST_DIR="$ROOT_DIR/dist"
 REMOTE_DIR="/tmp/linkshare-deploy-$$"
@@ -45,13 +47,13 @@ rm -rf "$DIST_DIR"
 docker build --platform linux/amd64 --target artifact --output "type=local,dest=$DIST_DIR" "$ROOT_DIR"
 test -x "$DIST_DIR/linkshare"
 
-python3 - "$ROOT_DIR/deploy/linkshare.env.template" "$DIST_DIR/linkshare.env" "$OWNER_NAME" "$LINKSHARE_PORT" <<'PY'
+python3 - "$ROOT_DIR/deploy/linkshare.env.template" "$DIST_DIR/linkshare.env" "$OWNER_NAME" "$LINKSHARE_PORT" "$LINK_TTL" <<'PY'
 from pathlib import Path
 import sys
 
-template, output, owner, port = sys.argv[1:]
+template, output, owner, port, link_ttl = sys.argv[1:]
 text = Path(template).read_text(encoding="utf-8")
-text = text.replace("@OWNER_NAME@", owner).replace("@PORT@", port)
+text = text.replace("@OWNER_NAME@", owner).replace("@PORT@", port).replace("@LINK_TTL@", link_ttl)
 Path(output).write_text(text, encoding="utf-8")
 PY
 
@@ -66,6 +68,10 @@ Path(output).write_text(text, encoding="utf-8")
 PY
 
 printf '[linkshare] Uploading deployment bundle to %s\n' "$PVE_HOST"
+if ssh -o BatchMode=yes "$PVE_HOST" "pct config '$CTID' >/dev/null 2>&1"; then
+	printf '[linkshare] Backing up existing CT %s before migration\n' "$CTID"
+	ssh -o BatchMode=yes "$PVE_HOST" "vzdump '$CTID' --storage '$BACKUP_STORAGE' --mode snapshot --compress zstd"
+fi
 ssh -o BatchMode=yes "$PVE_HOST" "mkdir -p '$REMOTE_DIR'"
 scp -q \
 	"$DIST_DIR/linkshare" \
@@ -129,8 +135,8 @@ Use the installed \`\$linkshare\` skill whenever asked to share, save, check, co
 - The trusted-LAN service is configured at \`$URL\`.
 - Send links for $OWNER_NAME to the \`owner\` target.
 - Check the \`agents\` target for links intended for Codex agents.
-- Mark a link read only after actually consuming it.
-- Do not archive links unless $OWNER_NAME asks.
+- Consume a link only after successfully using it; consumption is permanent.
+- Leave failed or unrelated links waiting. They expire automatically.
 <!-- linkshare:end -->
 EOF
 mv "$temporary" "$GUIDANCE_FILE"

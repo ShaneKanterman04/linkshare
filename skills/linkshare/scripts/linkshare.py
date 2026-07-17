@@ -16,9 +16,7 @@ from urllib.request import Request, urlopen
 
 ACTIONS = {
     "read": "mark_read",
-    "unread": "mark_unread",
     "archive": "archive",
-    "restore": "restore",
 }
 
 
@@ -105,6 +103,8 @@ def request_json(
     except TimeoutError as exc:
         raise ClientError("Linkshare request timed out") from exc
 
+    if not raw:
+        return None
     try:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -130,12 +130,15 @@ def build_parser() -> argparse.ArgumentParser:
     list_parser.add_argument(
         "--state",
         choices=("active", "unread", "read", "archived", "all"),
-        default="unread",
+        help=argparse.SUPPRESS,
     )
     list_parser.add_argument("--limit", type=int, choices=range(1, 201), default=50)
     list_parser.add_argument("--before-id", type=int)
 
-    action = commands.add_parser("action", help="Change a link's state")
+    consume = commands.add_parser("consume", help="Permanently remove a used link")
+    consume.add_argument("id", type=int)
+
+    action = commands.add_parser("action", help=argparse.SUPPRESS)
     action.add_argument("id", type=int)
     action.add_argument("action", choices=tuple(ACTIONS))
     action.add_argument("--actor")
@@ -173,12 +176,19 @@ def run(args: argparse.Namespace) -> Any:
     if args.command == "list":
         query: dict[str, Any] = {
             "target": args.target,
-            "state": args.state,
             "limit": args.limit,
         }
+        if args.state is not None:
+            query["state"] = args.state
         if args.before_id is not None:
             query["before_id"] = args.before_id
         return request_json(base_url, "GET", f"/api/v1/links?{urlencode(query)}")
+
+    if args.command == "consume":
+        if args.id < 1:
+            raise ClientError("link id must be positive")
+        request_json(base_url, "DELETE", f"/api/v1/links/{args.id}")
+        return {"consumed": True, "id": args.id}
 
     if args.command == "action":
         if args.id < 1:

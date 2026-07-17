@@ -6,7 +6,7 @@ A lightweight two-way link inbox for a person and their coding agents. Linkshare
 
 - **For me** and **For agents** inboxes
 - Optional titles and notes
-- Read receipts, archive, and restore actions
+- One-time consumption and automatic seven-day expiry
 - Agent-friendly JSON API and built-in `/guide`
 - Single static Go binary with embedded frontend assets
 - Direct unprivileged Proxmox LXC deployment
@@ -30,7 +30,7 @@ The ignored `.linkshare-deploy.env` controls the Proxmox host, VMID, template, s
 - Selects the first available configured address
 - Installs a hardened systemd service and nftables policy
 - Disables guest SSH in favor of `pct exec`
-- Preserves SQLite data and retains the previous binary for rollback
+- Backs up the LXC, safely migrates SQLite data, and retains the previous binary for rollback
 - Verifies the deployed binary hash and health endpoint
 - Installs the Codex skill and endpoint configuration locally
 
@@ -52,8 +52,7 @@ Agents can then use `$linkshare` for requests such as:
 
 - “Share this link with me.”
 - “Check the links I left for agents.”
-- “Mark Linkshare item 12 unread.”
-- “Archive the link after you finish with it.”
+- “Consume Linkshare item 12 after you use it.”
 
 The deterministic client can also be run directly:
 
@@ -61,8 +60,8 @@ The deterministic client can also be run directly:
 python3 skills/linkshare/scripts/linkshare.py health
 python3 skills/linkshare/scripts/linkshare.py discover
 python3 skills/linkshare/scripts/linkshare.py send https://example.com --title "Example" --actor codex-agent
-python3 skills/linkshare/scripts/linkshare.py list --target agents --state unread
-python3 skills/linkshare/scripts/linkshare.py action 12 read --actor codex-agent
+python3 skills/linkshare/scripts/linkshare.py list --target agents
+python3 skills/linkshare/scripts/linkshare.py consume 12
 ```
 
 Set `LINKSHARE_URL` to override the configured endpoint.
@@ -79,15 +78,13 @@ curl -X POST http://LINKSHARE_HOST:8080/api/v1/links \
   -d '{"url":"https://example.com","title":"Example","note":"Worth reading","target":"owner","submitted_by":"codex-agent"}'
 
 # Get links waiting for agents
-curl 'http://LINKSHARE_HOST:8080/api/v1/links?target=agents&state=unread'
+curl 'http://LINKSHARE_HOST:8080/api/v1/links?target=agents'
 
 # Mark one consumed
-curl -X PATCH http://LINKSHARE_HOST:8080/api/v1/links/1 \
-  -H 'Content-Type: application/json' \
-  -d '{"action":"mark_read","actor":"codex-agent"}'
+curl -X DELETE http://LINKSHARE_HOST:8080/api/v1/links/1
 ```
 
-List states are `active`, `unread`, `read`, `archived`, and `all`. Results are newest-first. `limit` defaults to 50 and accepts up to 200.
+Links are permanently removed when consumed and otherwise expire after seven days. Results are newest-first; `limit` defaults to 50 and accepts up to 200.
 
 ## Development
 
@@ -106,3 +103,4 @@ Runtime configuration:
 | `LINKSHARE_ADDR` | `:8080` | Listen address |
 | `LINKSHARE_DB` | `./linkshare.db` | SQLite database path |
 | `LINKSHARE_OWNER_NAME` | `Me` | Browser actor label |
+| `LINKSHARE_LINK_TTL` | `168h` | Lifetime for new links |
