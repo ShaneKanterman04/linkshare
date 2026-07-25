@@ -77,7 +77,7 @@ type endpointDescription struct {
 var publicEndpoints = []endpointDescription{
 	{Method: http.MethodGet, Path: "/api/v1", Description: "List available Linkshare endpoints and expiry policy."},
 	{Method: http.MethodGet, Path: "/api/v1/links", Description: "List unexpired links waiting in an inbox."},
-	{Method: http.MethodPost, Path: "/api/v1/links", Description: "Create an expiring link for the owner or agents."},
+	{Method: http.MethodPost, Path: "/api/v1/links", Description: "Create an expiring link for the owner or agents. Resending an active URL replaces the previous entry for that target."},
 	{Method: http.MethodDelete, Path: "/api/v1/links/{id}", Description: "Consume or dismiss a link permanently."},
 	{Method: http.MethodPatch, Path: "/api/v1/links/{id}", Description: "Legacy consume compatibility; use DELETE for new clients."},
 	{Method: http.MethodGet, Path: "/healthz", Description: "Check service and database health."},
@@ -215,7 +215,8 @@ func migrateDB(db *sql.DB, now time.Time, ttl time.Duration) error {
 	}
 	for _, statement := range []string{
 		"CREATE INDEX IF NOT EXISTS links_target_expiry_id ON links(target, expires_at, id DESC)",
-		"PRAGMA user_version = 2",
+		"CREATE INDEX IF NOT EXISTS links_url_target ON links(url, target)",
+		"PRAGMA user_version = 3",
 	} {
 		if _, err := tx.Exec(statement); err != nil {
 			return fmt.Errorf("database migration: %w", err)
@@ -360,10 +361,29 @@ func (a *app) createLink(w http.ResponseWriter, r *http.Request) {
 	now := a.now().UTC()
 	createdAt := now.Format(time.RFC3339Nano)
 	expiresAt := now.Add(a.linkTTL).Format(time.RFC3339Nano)
-	result, err := a.db.ExecContext(r.Context(), `
+	tx, err := a.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		a.log.Error("create link", "error", err)
+		a.writeError(w, http.StatusInternalServerError, "database_error", "could not save link")
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(r.Context(),
+		"DELETE FROM links WHERE url = ? AND target = ? AND expires_at > ?",
+		input.URL, input.Target, createdAt); err != nil {
+		a.log.Error("replace duplicate links", "error", err)
+		a.writeError(w, http.StatusInternalServerError, "database_error", "could not save link")
+		return
+	}
+	result, err := tx.ExecContext(r.Context(), `
 		INSERT INTO links (url, title, note, target, submitted_by, created_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`, input.URL, input.Title, input.Note, input.Target, input.SubmittedBy, createdAt, expiresAt)
 	if err != nil {
+		a.log.Error("create link", "error", err)
+		a.writeError(w, http.StatusInternalServerError, "database_error", "could not save link")
+		return
+	}
+	if err := tx.Commit(); err != nil {
 		a.log.Error("create link", "error", err)
 		a.writeError(w, http.StatusInternalServerError, "database_error", "could not save link")
 		return

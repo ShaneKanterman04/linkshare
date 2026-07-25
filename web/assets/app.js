@@ -1,9 +1,10 @@
 const ownerName = document.querySelector('meta[name="owner-name"]').content || 'Me';
-const state = { target: 'owner', loading: false };
+const state = { target: 'owner', loading: false, failures: 0, lastUpdated: null };
 
 const linksNode = document.querySelector('#links');
 const noticeNode = document.querySelector('#notice');
 const inboxHeading = document.querySelector('#inbox-heading');
+const updatedNode = document.querySelector('#updated');
 const form = document.querySelector('#link-form');
 
 form.addEventListener('submit', async (event) => {
@@ -63,12 +64,31 @@ async function refresh() {
     document.querySelector('#agents-count').textContent = agents.total;
     renderLinks(result.items);
     noticeNode.hidden = true;
+    state.failures = 0;
+    state.lastUpdated = Date.now();
+    renderUpdated();
   } catch (error) {
+    state.failures += 1;
+    if (state.failures >= 2) {
+      updatedNode.textContent = 'connection lost — retrying';
+      updatedNode.classList.add('stale');
+    }
     showError(error.message);
   } finally {
     state.loading = false;
     document.querySelector('#refresh').classList.remove('spinning');
   }
+}
+
+function renderUpdated() {
+  if (state.failures >= 2) return;
+  updatedNode.classList.remove('stale');
+  if (!state.lastUpdated) {
+    updatedNode.textContent = '';
+    return;
+  }
+  const minutes = Math.floor((Date.now() - state.lastUpdated) / 60000);
+  updatedNode.textContent = minutes < 1 ? 'updated just now' : `updated ${minutes}m ago`;
 }
 
 function renderLinks(items) {
@@ -146,7 +166,7 @@ async function consume(id, row) {
     await refresh();
   } catch (error) {
     row.classList.remove('leaving');
-    showError(error.message);
+    showError(`${error.message} — if you opened the link, dismiss it manually`);
   }
 }
 
@@ -173,5 +193,19 @@ function showError(message) {
   noticeNode.hidden = false;
 }
 
+function scheduleNext() {
+  const delay = Math.min(30000 * 2 ** state.failures, 120000);
+  setTimeout(async () => {
+    if (!document.hidden) await refresh();
+    scheduleNext();
+  }, delay);
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) refresh();
+});
+
+setInterval(renderUpdated, 30000);
+
 refresh();
-setInterval(refresh, 30000);
+scheduleNext();

@@ -221,10 +221,66 @@ func TestValidationAndOriginProtection(t *testing.T) {
 	}
 }
 
+func TestDuplicateLinkReplacesOriginal(t *testing.T) {
+	_, handler := testApp(t)
+
+	first := requestJSON(t, handler, http.MethodPost, "/api/v1/links", `{
+		"url":"https://example.com/page","title":"Old title","note":"old note","target":"agents","submitted_by":"codex"
+	}`)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first create = %d %s", first.Code, first.Body.String())
+	}
+	var original link
+	if err := json.Unmarshal(first.Body.Bytes(), &original); err != nil {
+		t.Fatal(err)
+	}
+
+	second := requestJSON(t, handler, http.MethodPost, "/api/v1/links", `{
+		"url":"https://example.com/page","title":"New title","note":"new note","target":"agents","submitted_by":"codex"
+	}`)
+	if second.Code != http.StatusCreated {
+		t.Fatalf("second create = %d %s", second.Code, second.Body.String())
+	}
+	var replacement link
+	if err := json.Unmarshal(second.Body.Bytes(), &replacement); err != nil {
+		t.Fatal(err)
+	}
+	if replacement.ID <= original.ID {
+		t.Fatalf("replacement id %d should be greater than original id %d", replacement.ID, original.ID)
+	}
+	if replacement.Title != "New title" || replacement.Note != "new note" {
+		t.Fatalf("replacement fields not updated: %+v", replacement)
+	}
+
+	if stale := requestJSON(t, handler, http.MethodDelete, "/api/v1/links/"+strconv.FormatInt(original.ID, 10), ""); stale.Code != http.StatusNotFound {
+		t.Fatalf("consuming replaced id = %d; want 404", stale.Code)
+	}
+	waiting := requestJSON(t, handler, http.MethodGet, "/api/v1/links?target=agents", "")
+	if waiting.Code != http.StatusOK || !strings.Contains(waiting.Body.String(), `"total":1`) {
+		t.Fatalf("list after replace = %d %s", waiting.Code, waiting.Body.String())
+	}
+}
+
+func TestDuplicateLinkAcrossTargetsIsIndependent(t *testing.T) {
+	_, handler := testApp(t)
+	for _, target := range []string{"agents", "owner"} {
+		body := `{"url":"https://example.com/shared","target":"` + target + `","submitted_by":"codex"}`
+		if response := requestJSON(t, handler, http.MethodPost, "/api/v1/links", body); response.Code != http.StatusCreated {
+			t.Fatalf("create %s = %d %s", target, response.Code, response.Body.String())
+		}
+	}
+	for _, target := range []string{"agents", "owner"} {
+		response := requestJSON(t, handler, http.MethodGet, "/api/v1/links?target="+target, "")
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"total":1`) {
+			t.Fatalf("list %s = %d %s", target, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestPaginationAndTargetIsolation(t *testing.T) {
 	_, handler := testApp(t)
-	for _, target := range []string{"agents", "agents", "owner"} {
-		body := `{"url":"https://example.com/` + target + `","target":"` + target + `","submitted_by":"tester"}`
+	for i, target := range []string{"agents", "agents", "owner"} {
+		body := `{"url":"https://example.com/` + target + `/` + strconv.Itoa(i) + `","target":"` + target + `","submitted_by":"tester"}`
 		if response := requestJSON(t, handler, http.MethodPost, "/api/v1/links", body); response.Code != http.StatusCreated {
 			t.Fatalf("create %s: %s", target, response.Body.String())
 		}

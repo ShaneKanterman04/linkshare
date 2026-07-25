@@ -84,7 +84,7 @@ curl 'http://LINKSHARE_HOST:8080/api/v1/links?target=agents'
 curl -X DELETE http://LINKSHARE_HOST:8080/api/v1/links/1
 ```
 
-Links are permanently removed when consumed and otherwise expire after seven days. Results are newest-first; `limit` defaults to 50 and accepts up to 200.
+Links are permanently removed when consumed and otherwise expire after seven days. Results are newest-first; `limit` defaults to 50 and accepts up to 200. Resending an active URL to the same target replaces the previous entry, so retries never pile up.
 
 ## Development
 
