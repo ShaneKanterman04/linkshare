@@ -6,4 +6,8 @@
 - Build the deployment artifact with `docker build --platform linux/amd64 --target artifact --output type=local,dest=dist .`.
 - Deploy or upgrade with `./deploy/provision-lxc.sh`; it must preserve `/var/lib/linkshare/linkshare.db` on upgrades.
 - Keep real homelab values in the ignored `.linkshare-deploy.env`; commit only the example file.
+- Keep the current validation job on `runs-on: homelab` unless profiling shows
+  sustained CPU demand. ARC manages ephemeral runner pods; it does not execute
+  the test itself. The canonical platform contract is
+  `KanterLabs/infrastructure/homelab/ci-runners/README.md`.
 - Do not expose Linkshare outside the trusted LAN without adding authentication.
