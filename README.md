@@ -12,6 +12,16 @@ A lightweight two-way link inbox for a person and their coding agents. Linkshare
 - Direct unprivileged Proxmox LXC deployment
 - Reusable `linkshare` Codex skill with a deterministic client
 
+## GitHub CI runner
+
+Validation runs on the `homelab` micro tier. ARC manages the ephemeral fleet;
+the runner pod executes the Go tests and image-build validation, then is
+deleted. Keep this job micro unless profiling shows sustained CPU demand that
+justifies `homelab-heavy`.
+
+See the
+[canonical KanterLabs runner runbook](https://github.com/KanterLabs/infrastructure/tree/main/homelab/ci-runners).
+
 ## Proxmox deployment
 
 Docker is used only to build the static binary. The production LXC runs the binary directly under systemd.
