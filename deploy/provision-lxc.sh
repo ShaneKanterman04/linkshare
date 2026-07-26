@@ -26,12 +26,24 @@ LINK_TTL="${LINK_TTL:-168h}"
 
 DIST_DIR="$ROOT_DIR/dist"
 REMOTE_DIR="/tmp/linkshare-deploy-$$"
+publish_operation() {
+	CTID="$CTID" python3 "$ROOT_DIR/deploy/operations.py" \
+		"$1" "$2" "$3" >/dev/null 2>&1 || true
+}
 
 cleanup() {
+	rc=$?
 	ssh -o BatchMode=yes "$PVE_HOST" "rm -rf '$REMOTE_DIR'" >/dev/null 2>&1 || true
+	if [[ "$rc" -eq 0 ]]; then
+		publish_operation succeeded "Provision complete" "Service and agent skill verified"
+	else
+		publish_operation failed "Provision failed" "Operator attention required"
+	fi
+	exit "$rc"
 }
 trap cleanup EXIT
 
+publish_operation active "Validating release" "Tests, image build, backup, and LXC update"
 printf '[linkshare] Running tests\n'
 docker run --rm -v "$ROOT_DIR:/src" -w /src golang:1.24-alpine sh -c 'go vet ./... && go test ./...'
 node --check "$ROOT_DIR/web/assets/app.js"
